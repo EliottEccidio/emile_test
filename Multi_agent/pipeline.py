@@ -1,10 +1,10 @@
-"""Pipeline d'evaluation agentique sur GSM8K.
+"""Pipeline d'evaluation sur GSM8K : SLM seul vs systeme multi-agent.
 
-Trois etapes :
-  1. Baseline   : Qwen repond directement a chaque question (batch).
-  2. Agentique  : CalculusExtractor extrait l'expression (batch //),
-                  PythonCalculator evalue (pur Python, instantane).
-  3. Comparaison: accuracy agentique vs baseline vs gold.
+Trois mesures sur les MEMES 100 questions :
+  1. Baseline       : Qwen repond directement (batch).
+  2. Agentique 1    : single-shot (extraction -> calcul Python).
+  3. Agentique 2    : iteratif (boucle SLM<->Python).
+Puis comparaison des precisions.
 
 Usage : python pipeline.py
 """
@@ -19,12 +19,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from datasets import load_dataset
 
 from agent import CalculusExtractor, PythonCalculator
-from memory import WorldState
+from core import solve_iterative, solve_single_shot
 from slm import SLMClient
 from src.metrics import accuracy, extract_gold_answer, extract_pred_answer, is_correct
 
 SEED = 42
 N = 100
+MAX_STEPS = 6          # garde de terminaison de la strategie iterative
 DATASET = "openai/gsm8k"
 
 _BASELINE_PROMPT = (
@@ -62,59 +63,39 @@ def run_baseline(slm: SLMClient, questions: list[str]) -> list[str | None]:
     return [extract_pred_answer(o) for o in outputs]
 
 
-def run_agentic(
-    extractor: CalculusExtractor,
-    calculator: PythonCalculator,
-    questions: list[str],
-) -> list[str | None]:
-    # Etape 1 : extraction en batch (un seul appel SLM batche pour tout le lot)
-    print(f"[agentic] extraction en batch sur {len(questions)} questions ...")
-    extraction_obs = extractor.execute_batch(questions)
-    n_extracted = sum(1 for o in extraction_obs if o.ok)
-    print(f"[agentic] {n_extracted}/{len(questions)} expressions extraites")
-
-    # Etape 2 : calcul Python (pur, instantane — PythonCalculator.propose valide le scope)
-    results: list[str | None] = []
-    for obs in extraction_obs:
-        if not obs.ok or obs.result is None:
-            results.append(None)
-            continue
-        state = WorldState(goal=obs.result)
-        action = calculator.propose(state, None)  # type: ignore[arg-type]
-        if action is None:
-            results.append(None)
-            continue
-        calc_obs = calculator.execute(action, state)
-        results.append(str(calc_obs.result) if calc_obs.ok else None)
-    return results
+def _rate(preds: list[str | None]) -> float:
+    return sum(1 for p in preds if p is not None) / len(preds)
 
 
 def report(
     golds: list[str],
     baseline: list[str | None],
-    agentic: list[str | None],
+    single_shot: list[str | None],
+    iterative: list[str | None],
 ) -> None:
     n = len(golds)
     base_acc = accuracy(baseline, golds)
-    agt_acc = accuracy(agentic, golds)
-    extraction_rate = sum(1 for a in agentic if a is not None) / n
+    ss_acc = accuracy(single_shot, golds)
+    it_acc = accuracy(iterative, golds)
 
-    print("\n" + "=" * 52)
-    print(f"  N questions          : {n}")
-    print(f"  Baseline Qwen        : {base_acc:.1%}")
-    print(f"  Pipeline agentique   : {agt_acc:.1%}")
-    print(f"  Taux d'extraction    : {extraction_rate:.1%}")
-    print(f"  Delta                : {agt_acc - base_acc:+.1%}")
-    print("=" * 52)
+    print("\n" + "=" * 64)
+    print(f"  N questions               : {n}")
+    print(f"  Baseline Qwen (seul)      : {base_acc:.1%}")
+    print(f"  Agentique single-shot     : {ss_acc:.1%}   "
+          f"(delta {ss_acc - base_acc:+.1%}, resolu {_rate(single_shot):.0%})")
+    print(f"  Agentique iteratif        : {it_acc:.1%}   "
+          f"(delta {it_acc - base_acc:+.1%}, resolu {_rate(iterative):.0%})")
+    print("=" * 64)
 
-    print("\n5 premiers exemples :")
-    for i in range(min(5, n)):
-        b = "OK" if is_correct(baseline[i], golds[i]) else "KO"
-        a = "OK" if is_correct(agentic[i], golds[i]) else "KO"
+    print("\n8 premiers exemples (gold | baseline | single-shot | iteratif) :")
+    for i in range(min(8, n)):
+        def tag(p: str | None) -> str:
+            return "OK" if is_correct(p, golds[i]) else "  "
         print(
-            f"  [{i+1:02d}] gold={golds[i]:>8} | "
-            f"baseline[{b}]={str(baseline[i]):>10} | "
-            f"agentic[{a}]={str(agentic[i])}"
+            f"  [{i + 1:02d}] gold={golds[i]:>8} | "
+            f"{tag(baseline[i])} {str(baseline[i]):>10} | "
+            f"{tag(single_shot[i])} {str(single_shot[i]):>10} | "
+            f"{tag(iterative[i])} {str(iterative[i]):>10}"
         )
 
 
@@ -124,9 +105,16 @@ def main() -> None:
     slm = SLMClient(max_new_tokens=512, batch_size=8)
     extractor = CalculusExtractor(slm)
     calculator = PythonCalculator()
-    baseline_preds = run_baseline(slm, questions)
-    agentic_preds = run_agentic(extractor, calculator, questions)
-    report(golds, baseline_preds, agentic_preds)
+
+    baseline = run_baseline(slm, questions)
+
+    print(f"[agentic] single-shot sur {len(questions)} questions ...")
+    single_shot = solve_single_shot(extractor, calculator, questions)
+
+    print(f"[agentic] iteratif (max_steps={MAX_STEPS}) sur {len(questions)} questions ...")
+    iterative = solve_iterative(extractor, calculator, questions, max_steps=MAX_STEPS)
+
+    report(golds, baseline, single_shot, iterative)
 
 
 if __name__ == "__main__":

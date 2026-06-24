@@ -1,12 +1,11 @@
-"""Roster d'agents : contrat commun + registre extensible + un agent concret.
+"""Roster d'agents : contrat commun + registre extensible + 2 agents concrets.
 
-Contrat (cf. skill agentic-systems) :
-  - propose(state, llm) -> Action | None : le PLAN, sans effet de bord.
-  - execute(action, state) -> Observation : l'ACT, seul endroit a effet de bord.
+Contrat (point d'extension) :
+  - propose(state) -> Action | None       : le PLAN, sans effet de bord.
+  - execute(action, state) -> Observation  : l'ACT, seul endroit a effet de bord.
 
-On ajoute un agent SANS toucher au superviseur (open/closed) : il suffit de le
-decorer avec @register. Son attribut de CLASSE `name` sert de cle dans
-AGENT_REGISTRY, et `tools` declare les outils que le superviseur autorise.
+On ajoute un agent SANS toucher au reste : il suffit de le decorer avec @register.
+Son attribut de CLASSE `name` sert de cle dans AGENT_REGISTRY.
 """
 from __future__ import annotations
 
@@ -18,16 +17,15 @@ from memory import Action, Observation, WorldState
 
 
 class LLMClient(Protocol):
-    """Interface du LLM (injectee) : rend agents et superviseur mockables."""
+    """Interface du LLM (injectee) : rend les agents mockables."""
     def complete(self, prompt: str) -> str: ...
 
 
 class Agent(Protocol):
     """Contrat commun a tous les agents."""
-    name: str                    # cle dans AGENT_REGISTRY (attribut de CLASSE)
-    tools: tuple[str, ...]       # allow-list verifiee par le superviseur (scope)
+    name: str  # cle dans AGENT_REGISTRY (attribut de CLASSE)
 
-    def propose(self, state: WorldState, llm: LLMClient) -> Action | None: ...
+    def propose(self, state: WorldState) -> Action | None: ...
     def execute(self, action: Action, state: WorldState) -> Observation: ...
 
 
@@ -69,10 +67,9 @@ class PythonCalculator:
     a lieu dans execute.
     """
     name = "python_calculator"
-    tools = ("eval_arithmetic",)
 
-    def propose(self, state: WorldState, llm: LLMClient) -> Action | None:
-        expr = state.scratch.get("expression") or state.goal
+    def propose(self, state: WorldState) -> Action | None:
+        expr = state.goal
         if not self._is_arithmetic(expr):
             return None
         return Action(agent=self.name, tool="eval_arithmetic",
@@ -129,6 +126,17 @@ _EXTRACTION_PROMPT = (
     "Problem: {question}"
 )
 
+_STEP_HEADER = (
+    "You solve a math word problem ONE calculation at a time, using a calculator.\n"
+    "Problem: {question}\n"
+)
+_STEP_FOOTER = (
+    "Write ONLY the next arithmetic expression to evaluate (numbers and + - * / ( ) ), "
+    "using the results above as plain numbers. "
+    "If the last result is already the final answer, reply exactly: STOP\n"
+    "Next:"
+)
+
 
 def _parse_expression(raw: str) -> str | None:
     """Extrait la derniere ligne non vide du output SLM et nettoie les prefixes."""
@@ -136,7 +144,7 @@ def _parse_expression(raw: str) -> str | None:
     if not lines:
         return None
     candidate = lines[-1]
-    for prefix in ("expression:", "answer:", "####", "=", "result:"):
+    for prefix in ("expression:", "answer:", "next:", "####", "=", "result:"):
         if candidate.lower().startswith(prefix.lower()):
             candidate = candidate[len(prefix):].strip()
     if " = " in candidate:
@@ -144,55 +152,68 @@ def _parse_expression(raw: str) -> str | None:
     return candidate or None
 
 
+def _format_history(history: list[Observation]) -> str:
+    """Rend les etapes deja calculees pour les reinjecter dans le prompt SLM."""
+    if not history:
+        return "No calculations done yet.\n"
+    lines = [f"  {o.action.payload['expression']} = {o.result}" for o in history]
+    return "Calculations so far:\n" + "\n".join(lines) + "\n"
+
+
 @register
 class CalculusExtractor:
     """Extrait l'expression arithmetique d'un enonce GSM8K via appel SLM.
 
-    propose       : declare l'intention d'extraire.
-    execute       : appel SLM unitaire, retourne l'expression str.
-    execute_batch : extraction en // — un seul appel SLM batche pour tout le lot.
+    - propose/execute     : contrat de base, extraction single-shot d'une question.
+    - execute_batch       : version batchee de l'extraction single-shot (perf).
+    - extract_next        : etape de la strategie iterative (lit l'historique).
     """
     name = "calculus"
-    tools = ("extract_calculus",)
 
-    def __init__(self, slm: Any) -> None:
+    def __init__(self, slm: LLMClient) -> None:
         self._slm = slm
 
-    def propose(self, state: WorldState, llm: LLMClient) -> Action | None:
-        question = state.scratch.get("question") or state.goal
-        if not question:
+    def propose(self, state: WorldState) -> Action | None:
+        if not state.goal:
             return None
-        return Action(
-            agent=self.name,
-            tool="extract_calculus",
-            payload={"question": question},
-        )
+        return Action(agent=self.name, tool="extract_calculus",
+                      payload={"question": state.goal})
 
     def execute(self, action: Action, state: WorldState) -> Observation:
         question = action.payload["question"]
         raw = self._slm.complete(_EXTRACTION_PROMPT.format(question=question))
-        expr = _parse_expression(raw)
-        return Observation(
-            action=action,
-            ok=bool(expr),
-            result=expr,
-            error=None if expr else "aucune expression valide extraite",
-        )
+        return self._observe(action, _parse_expression(raw))
 
     def execute_batch(self, questions: list[str]) -> list[Observation]:
-        """Extraction en batch : un seul appel SLM pour tout le lot de questions."""
+        """Extraction single-shot batchee : un appel SLM batche pour tout le lot."""
         prompts = [_EXTRACTION_PROMPT.format(question=q) for q in questions]
         raws = self._slm.complete_batch(prompts)
         observations = []
         for q, raw in zip(questions, raws):
-            action = Action(
-                agent=self.name, tool="extract_calculus", payload={"question": q}
-            )
-            expr = _parse_expression(raw)
-            observations.append(Observation(
-                action=action,
-                ok=bool(expr),
-                result=expr,
-                error=None if expr else "aucune expression valide",
-            ))
+            action = Action(agent=self.name, tool="extract_calculus",
+                            payload={"question": q})
+            observations.append(self._observe(action, _parse_expression(raw)))
         return observations
+
+    def extract_next(self, state: WorldState) -> str | None:
+        """Strategie iterative : propose la prochaine expression a calculer.
+
+        Renvoie None si le SLM signale STOP, ne produit rien, ou propose une
+        expression deja calculee (anti-boucle).
+        """
+        prompt = (_STEP_HEADER.format(question=state.goal)
+                  + _format_history(state.history)
+                  + _STEP_FOOTER)
+        raw = self._slm.complete(prompt, max_new_tokens=64)
+        if raw.strip().upper().startswith("STOP"):
+            return None
+        expr = _parse_expression(raw)
+        if expr is None:
+            return None
+        already_done = {o.action.payload["expression"] for o in state.history}
+        return None if expr in already_done else expr
+
+    @staticmethod
+    def _observe(action: Action, expr: str | None) -> Observation:
+        return Observation(action=action, ok=bool(expr), result=expr,
+                           error=None if expr else "aucune expression valide")

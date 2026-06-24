@@ -51,11 +51,18 @@ class SLMClient:
             add_generation_prompt=True,
         )
 
-    def complete(self, prompt: str) -> str:
-        return self.complete_batch([prompt])[0]
+    def complete(self, prompt: str, max_new_tokens: int | None = None) -> str:
+        return self.complete_batch([prompt], max_new_tokens=max_new_tokens)[0]
 
-    def complete_batch(self, prompts: list[str]) -> list[str]:
-        """Generation par mini-lots de `self.batch_size` (evite les OOM)."""
+    def complete_batch(
+        self, prompts: list[str], max_new_tokens: int | None = None
+    ) -> list[str]:
+        """Generation par mini-lots de `self.batch_size` (evite les OOM).
+
+        `max_new_tokens` borne la generation pour ce seul appel (defaut =
+        self.max_new_tokens) : utile pour les etapes iteratives, courtes.
+        """
+        budget = max_new_tokens or self.max_new_tokens
         results: list[str] = []
         for start in range(0, len(prompts), self.batch_size):
             chunk = prompts[start : start + self.batch_size]
@@ -67,7 +74,7 @@ class SLMClient:
             with torch.inference_mode():
                 out_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=self.max_new_tokens,
+                    max_new_tokens=budget,
                     do_sample=self.temperature > 0,
                     temperature=self.temperature if self.temperature > 0 else None,
                     pad_token_id=self.tokenizer.eos_token_id,
