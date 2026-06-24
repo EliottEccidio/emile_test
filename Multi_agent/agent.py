@@ -163,17 +163,18 @@ class PythonCalculator:
 
 
 _POT_PROMPT = (
-    "You are given a math word problem. Write a short Python program that computes "
-    "the answer.\n"
-    "Rules:\n"
-    "- Use only +, -, *, /, //, %, ** and the functions min, max, abs, round, int, sum.\n"
-    "- One step per line with simple variables. No imports, no input(), no other "
-    "functions.\n"
-    "- Store the final numeric result in a variable named `answer`.\n"
-    "- Output ONLY the program inside a ```python code block.\n\n"
+    "You are given a math word problem. Think step by step, THEN write a short "
+    "Python program that computes the answer.\n"
+    "Instructions:\n"
+    "- First reason briefly in plain English (a few short sentences).\n"
+    "- Then write the program inside a ```python code block: one step per line, "
+    "simple variables, only + - * / // % ** and the functions min, max, abs, round, "
+    "int, sum. No imports, no input(). Store the final result in a variable `answer`.\n\n"
     "Example\n"
     "Problem: Natalia sold clips to 48 friends in April, then sold half as many in "
     "May. How many clips did she sell altogether?\n"
+    "Reasoning: In April she sold 48 clips. In May she sold half of April, so 48 / 2 = 24. "
+    "Altogether that is 48 + 24.\n"
     "```python\n"
     "april = 48\n"
     "may = april / 2\n"
@@ -219,8 +220,14 @@ class ProgramWriter:
         return Observation(action=action, ok=bool(code), result=code,
                            error=None if code else "aucun programme genere")
 
-    def write_program_batch(self, questions: list[str]) -> list[str | None]:
-        """Ecrit un programme par question (un seul appel SLM batche)."""
+    def write_program_batch(
+        self, questions: list[str], temperature: float | None = None
+    ) -> list[str | None]:
+        """Ecrit un programme par question (un seul appel SLM batche).
+
+        `temperature` > 0 diversifie les programmes (echantillonnage), ce qui
+        alimente le vote majoritaire de la self-consistency.
+        """
         prompts = [_POT_PROMPT.format(question=q) for q in questions]
-        raws = self._slm.complete_batch(prompts)
+        raws = self._slm.complete_batch(prompts, temperature=temperature)
         return [_extract_code(raw) for raw in raws]

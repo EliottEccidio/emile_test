@@ -51,18 +51,30 @@ class SLMClient:
             add_generation_prompt=True,
         )
 
-    def complete(self, prompt: str, max_new_tokens: int | None = None) -> str:
-        return self.complete_batch([prompt], max_new_tokens=max_new_tokens)[0]
+    def complete(
+        self,
+        prompt: str,
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        return self.complete_batch(
+            [prompt], max_new_tokens=max_new_tokens, temperature=temperature
+        )[0]
 
     def complete_batch(
-        self, prompts: list[str], max_new_tokens: int | None = None
+        self,
+        prompts: list[str],
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> list[str]:
         """Generation par mini-lots de `self.batch_size` (evite les OOM).
 
-        `max_new_tokens` borne la generation pour ce seul appel (defaut =
-        self.max_new_tokens).
+        `max_new_tokens` borne la generation pour ce seul appel. `temperature`
+        l'emporte sur self.temperature : >0 active l'echantillonnage (necessaire
+        a la self-consistency), 0 garde le greedy deterministe (baseline).
         """
         budget = max_new_tokens or self.max_new_tokens
+        temp = self.temperature if temperature is None else temperature
         results: list[str] = []
         for start in range(0, len(prompts), self.batch_size):
             chunk = prompts[start : start + self.batch_size]
@@ -71,14 +83,16 @@ class SLMClient:
                 texts, return_tensors="pt", padding=True, truncation=True
             ).to(_DEVICE)
             prompt_len = inputs["input_ids"].shape[-1]
+            gen_kwargs: dict = {
+                "max_new_tokens": budget,
+                "pad_token_id": self.tokenizer.eos_token_id,
+            }
+            if temp and temp > 0:
+                gen_kwargs.update(do_sample=True, temperature=temp, top_p=0.9)
+            else:
+                gen_kwargs["do_sample"] = False
             with torch.inference_mode():
-                out_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=budget,
-                    do_sample=self.temperature > 0,
-                    temperature=self.temperature if self.temperature > 0 else None,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                )
+                out_ids = self.model.generate(**inputs, **gen_kwargs)
             results.extend(
                 self.tokenizer.decode(ids[prompt_len:], skip_special_tokens=True).strip()
                 for ids in out_ids

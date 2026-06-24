@@ -25,6 +25,8 @@ from src.metrics import accuracy, extract_gold_answer, extract_pred_answer, is_c
 
 SEED = 42
 N = 100
+K = 5                   # echantillons par question pour la self-consistency
+TEMPERATURE = 0.7       # diversite de l'echantillonnage (vote majoritaire)
 DATASET = "openai/gsm8k"
 
 _BASELINE_PROMPT = (
@@ -78,8 +80,8 @@ def report(
     print("\n" + "=" * 60)
     print(f"  N questions             : {n}")
     print(f"  Baseline Qwen (seul)    : {base_acc:.1%}")
-    print(f"  Agentique PoT           : {agt_acc:.1%}   "
-          f"(delta {agt_acc - base_acc:+.1%}, programmes valides {_rate(agentic):.0%})")
+    print(f"  Agentique PoT + vote    : {agt_acc:.1%}   "
+          f"(delta {agt_acc - base_acc:+.1%}, reponses non vides {_rate(agentic):.0%})")
     print("=" * 60)
 
     print("\n10 premiers exemples (gold | baseline | agentique PoT) :")
@@ -102,8 +104,9 @@ def main() -> None:
 
     baseline = run_baseline(slm, questions)
 
-    print(f"[agentic] Program-of-Thoughts sur {len(questions)} questions ...")
-    agentic = solve_pot(writer, calculator, questions)
+    print(f"[agentic] PoT + self-consistency (k={K}, temp={TEMPERATURE}) "
+          f"sur {len(questions)} questions ...")
+    agentic = solve_pot(writer, calculator, questions, k=K, temperature=TEMPERATURE)
 
     report(golds, baseline, agentic)
 
