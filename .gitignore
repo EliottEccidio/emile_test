@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Artefacts ML (checkpoints, adaptateurs LoRA, rapports d'eval)
+outputs/
+mlruns/
+mlartifacts/
+mlflow.db
+wandb/
+
+# Cache HuggingFace / datasets
+data/
+.cache/
+
+# OS
+.DS_Store

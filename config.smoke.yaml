@@ -1,0 +1,45 @@
+# Config "smoke test" : limites minuscules pour valider la chaine end-to-end
+# rapidement (pas un vrai entrainement). Usage : python -m src.pipeline --config config.smoke.yaml
+
+seed: 42
+
+model:
+  name: Qwen/Qwen2.5-1.5B-Instruct
+  precision: auto
+  max_seq_length: 768
+
+data:
+  dataset: openai/gsm8k
+  subset: main
+  train_split: train
+  eval_split: test
+  train_limit: 20
+  eval_limit: 8
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+train:
+  output_dir: outputs/smoke-lora
+  epochs: 1
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 2
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.0
+  weight_decay: 0.0
+  lr_scheduler_type: constant
+  logging_steps: 1
+  save_strategy: "no"
+  gradient_checkpointing: false
+
+eval:
+  max_new_tokens: 256
+  temperature: 0.0
+  batch_size: 4
+
+mlflow:
+  tracking_uri: sqlite:///mlflow.db
+  experiment: smoke-test

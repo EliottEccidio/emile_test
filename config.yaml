@@ -1,0 +1,45 @@
+# Configuration unique du pipeline (lue par train / evaluate / pipeline).
+# Tous les chemins sont relatifs a la racine du projet (emile_test/).
+
+seed: 42
+
+model:
+  name: Qwen/Qwen2.5-1.5B-Instruct
+  precision: auto        # auto | fp32 | bf16 | fp16  (auto -> bf16 sur GPU, fp32 sur Mac/MPS)
+  max_seq_length: 1024
+
+data:
+  dataset: openai/gsm8k
+  subset: main
+  train_split: train
+  eval_split: test
+  train_limit: null      # null = tout (7473). Mets un petit nombre pour un smoke test.
+  eval_limit: 200        # eval sur un sous-ensemble pour la vitesse. null = les 1319.
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+train:
+  output_dir: outputs/qwen2.5-1.5b-gsm8k-lora
+  epochs: 1
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8     # batch effectif = 2 * 8 = 16
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  lr_scheduler_type: cosine
+  logging_steps: 10
+  save_strategy: epoch
+  gradient_checkpointing: true
+
+eval:
+  max_new_tokens: 512
+  temperature: 0.0       # 0.0 = greedy (deterministe)
+  batch_size: 8
+
+mlflow:
+  tracking_uri: sqlite:///mlflow.db   # backend SQLite (le file store ./mlruns est en maintenance mode en MLflow 3.x)
+  experiment: qwen2.5-1.5b-gsm8k-lora
