@@ -1,8 +1,8 @@
 """Memoire partagee du systeme multi-agent : le Blackboard (WorldState).
 
-Le WorldState est l'etat partage que les agents lisent (goal) et alimentent
-(history). Aucune logique metier ici : seulement l'etat et les types de domaine
-echanges (Action, Observation).
+Le WorldState porte l'artefact courant (`goal`) que les agents lisent dans propose
+et transforment dans execute. Aucune logique metier ici : seulement l'etat et les
+types de domaine echanges (Action, Observation).
 """
 from __future__ import annotations
 
@@ -29,14 +29,9 @@ class Observation:
 
 @dataclass
 class WorldState:
-    """Blackboard : objectif courant + memoire des etapes deja calculees.
+    """Blackboard : l'artefact courant sur lequel les agents operent.
 
-    `history` sert de memoire a la strategie iterative : chaque Observation y
-    conserve l'expression calculee et son resultat, reinjectes au SLM au tick
-    suivant.
+    Pour l'extraction : `goal` = l'enonce de la question.
+    Pour le calcul    : `goal` = le programme Python a executer.
     """
     goal: str
-    history: list[Observation] = field(default_factory=list)
-
-    def record(self, obs: Observation) -> None:
-        self.history.append(obs)

@@ -1,9 +1,9 @@
-"""Pipeline d'evaluation sur GSM8K : SLM seul vs systeme multi-agent.
+"""Pipeline d'evaluation sur GSM8K : SLM seul vs systeme multi-agent (PoT).
 
-Trois mesures sur les MEMES 100 questions :
-  1. Baseline       : Qwen repond directement (batch).
-  2. Agentique 1    : single-shot (extraction -> calcul Python).
-  3. Agentique 2    : iteratif (boucle SLM<->Python).
+Deux mesures sur les MEMES 100 questions :
+  1. Baseline : Qwen repond directement en chain-of-thought (batch).
+  2. Agentique : Program-of-Thoughts -> ProgramWriter (SLM ecrit du Python)
+                 puis PythonCalculator (execution sure).
 Puis comparaison des precisions.
 
 Usage : python pipeline.py
@@ -18,14 +18,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from datasets import load_dataset
 
-from agent import CalculusExtractor, PythonCalculator
-from core import solve_iterative, solve_single_shot
+from agent import ProgramWriter, PythonCalculator
+from core import solve_pot
 from slm import SLMClient
 from src.metrics import accuracy, extract_gold_answer, extract_pred_answer, is_correct
 
 SEED = 42
 N = 100
-MAX_STEPS = 6          # garde de terminaison de la strategie iterative
 DATASET = "openai/gsm8k"
 
 _BASELINE_PROMPT = (
@@ -70,32 +69,27 @@ def _rate(preds: list[str | None]) -> float:
 def report(
     golds: list[str],
     baseline: list[str | None],
-    single_shot: list[str | None],
-    iterative: list[str | None],
+    agentic: list[str | None],
 ) -> None:
     n = len(golds)
     base_acc = accuracy(baseline, golds)
-    ss_acc = accuracy(single_shot, golds)
-    it_acc = accuracy(iterative, golds)
+    agt_acc = accuracy(agentic, golds)
 
-    print("\n" + "=" * 64)
-    print(f"  N questions               : {n}")
-    print(f"  Baseline Qwen (seul)      : {base_acc:.1%}")
-    print(f"  Agentique single-shot     : {ss_acc:.1%}   "
-          f"(delta {ss_acc - base_acc:+.1%}, resolu {_rate(single_shot):.0%})")
-    print(f"  Agentique iteratif        : {it_acc:.1%}   "
-          f"(delta {it_acc - base_acc:+.1%}, resolu {_rate(iterative):.0%})")
-    print("=" * 64)
+    print("\n" + "=" * 60)
+    print(f"  N questions             : {n}")
+    print(f"  Baseline Qwen (seul)    : {base_acc:.1%}")
+    print(f"  Agentique PoT           : {agt_acc:.1%}   "
+          f"(delta {agt_acc - base_acc:+.1%}, programmes valides {_rate(agentic):.0%})")
+    print("=" * 60)
 
-    print("\n8 premiers exemples (gold | baseline | single-shot | iteratif) :")
-    for i in range(min(8, n)):
+    print("\n10 premiers exemples (gold | baseline | agentique PoT) :")
+    for i in range(min(10, n)):
         def tag(p: str | None) -> str:
             return "OK" if is_correct(p, golds[i]) else "  "
         print(
             f"  [{i + 1:02d}] gold={golds[i]:>8} | "
-            f"{tag(baseline[i])} {str(baseline[i]):>10} | "
-            f"{tag(single_shot[i])} {str(single_shot[i]):>10} | "
-            f"{tag(iterative[i])} {str(iterative[i]):>10}"
+            f"{tag(baseline[i])} {str(baseline[i]):>12} | "
+            f"{tag(agentic[i])} {str(agentic[i]):>12}"
         )
 
 
@@ -103,18 +97,15 @@ def main() -> None:
     set_seed(SEED)
     questions, golds = load_benchmark(SEED, N)
     slm = SLMClient(max_new_tokens=512, batch_size=8)
-    extractor = CalculusExtractor(slm)
+    writer = ProgramWriter(slm)
     calculator = PythonCalculator()
 
     baseline = run_baseline(slm, questions)
 
-    print(f"[agentic] single-shot sur {len(questions)} questions ...")
-    single_shot = solve_single_shot(extractor, calculator, questions)
+    print(f"[agentic] Program-of-Thoughts sur {len(questions)} questions ...")
+    agentic = solve_pot(writer, calculator, questions)
 
-    print(f"[agentic] iteratif (max_steps={MAX_STEPS}) sur {len(questions)} questions ...")
-    iterative = solve_iterative(extractor, calculator, questions, max_steps=MAX_STEPS)
-
-    report(golds, baseline, single_shot, iterative)
+    report(golds, baseline, agentic)
 
 
 if __name__ == "__main__":

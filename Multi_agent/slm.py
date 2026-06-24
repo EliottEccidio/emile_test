@@ -60,7 +60,7 @@ class SLMClient:
         """Generation par mini-lots de `self.batch_size` (evite les OOM).
 
         `max_new_tokens` borne la generation pour ce seul appel (defaut =
-        self.max_new_tokens) : utile pour les etapes iteratives, courtes.
+        self.max_new_tokens).
         """
         budget = max_new_tokens or self.max_new_tokens
         results: list[str] = []
